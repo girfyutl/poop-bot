@@ -25,16 +25,31 @@ TZ = timezone(timedelta(hours=8))
 def init_db():
     conn = sqlite3.connect("poop.db")
     c = conn.cursor()
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS poops (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT,
             user_id TEXT,
             user_name TEXT,
             created_at TEXT
         )
     """)
+
+    # 如果你之前已經有舊資料表，這段會自動補上 group_id，不會爆掉
+    try:
+        c.execute("ALTER TABLE poops ADD COLUMN group_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
+
+
+def get_group_id(event):
+    if hasattr(event.source, "group_id") and event.source.group_id:
+        return event.source.group_id
+    return None
 
 
 def get_user_name(event):
@@ -44,8 +59,10 @@ def get_user_name(event):
         with ApiClient(configuration) as api_client:
             api = MessagingApi(api_client)
 
-            if hasattr(event.source, "group_id") and event.source.group_id:
-                profile = api.get_group_member_profile(event.source.group_id, user_id)
+            group_id = get_group_id(event)
+
+            if group_id:
+                profile = api.get_group_member_profile(group_id, user_id)
             else:
                 profile = api.get_profile(user_id)
 
@@ -54,48 +71,55 @@ def get_user_name(event):
         return "神秘便士"
 
 
-def add_poop(user_id, user_name):
+def add_poop(group_id, user_id, user_name):
     now = datetime.now(TZ).isoformat()
     conn = sqlite3.connect("poop.db")
     c = conn.cursor()
     c.execute(
-        "INSERT INTO poops (user_id, user_name, created_at) VALUES (?, ?, ?)",
-        (user_id, user_name, now)
+        "INSERT INTO poops (group_id, user_id, user_name, created_at) VALUES (?, ?, ?, ?)",
+        (group_id, user_id, user_name, now)
     )
     conn.commit()
     conn.close()
 
 
-def count_user_today(user_id):
+def count_user_today(group_id, user_id):
     today = datetime.now(TZ).date().isoformat()
     conn = sqlite3.connect("poop.db")
     c = conn.cursor()
     c.execute(
-        "SELECT COUNT(*) FROM poops WHERE user_id = ? AND created_at LIKE ?",
-        (user_id, today + "%")
+        """
+        SELECT COUNT(*)
+        FROM poops
+        WHERE group_id = ?
+        AND user_id = ?
+        AND created_at LIKE ?
+        """,
+        (group_id, user_id, today + "%")
     )
     count = c.fetchone()[0]
     conn.close()
     return count
 
 
-def month_ranking():
+def month_ranking(group_id):
     month = datetime.now(TZ).strftime("%Y-%m")
     conn = sqlite3.connect("poop.db")
     c = conn.cursor()
     c.execute("""
         SELECT user_name, COUNT(*) as total
         FROM poops
-        WHERE created_at LIKE ?
+        WHERE group_id = ?
+        AND created_at LIKE ?
         GROUP BY user_id
         ORDER BY total DESC
-    """, (month + "%",))
+    """, (group_id, month + "%"))
     rows = c.fetchall()
     conn.close()
     return rows
 
 
-def week_champion():
+def week_champion(group_id):
     now = datetime.now(TZ)
     start = now - timedelta(days=now.weekday())
     start_text = start.date().isoformat()
@@ -105,26 +129,28 @@ def week_champion():
     c.execute("""
         SELECT user_name, COUNT(*) as total
         FROM poops
-        WHERE created_at >= ?
+        WHERE group_id = ?
+        AND created_at >= ?
         GROUP BY user_id
         ORDER BY total DESC
         LIMIT 1
-    """, (start_text,))
+    """, (group_id, start_text))
     row = c.fetchone()
     conn.close()
     return row
 
 
-def constipation_king():
+def constipation_king(group_id):
     conn = sqlite3.connect("poop.db")
     c = conn.cursor()
     c.execute("""
         SELECT user_name, MAX(created_at) as last_time
         FROM poops
+        WHERE group_id = ?
         GROUP BY user_id
         ORDER BY last_time ASC
         LIMIT 1
-    """)
+    """, (group_id,))
     row = c.fetchone()
     conn.close()
 
@@ -137,17 +163,18 @@ def constipation_king():
     return name, days
 
 
-def daily_chart():
+def daily_chart(group_id):
     month = datetime.now(TZ).strftime("%Y-%m")
     conn = sqlite3.connect("poop.db")
     c = conn.cursor()
     c.execute("""
         SELECT substr(created_at, 1, 10) as day, COUNT(*)
         FROM poops
-        WHERE created_at LIKE ?
+        WHERE group_id = ?
+        AND created_at LIKE ?
         GROUP BY day
         ORDER BY day
-    """, (month + "%",))
+    """, (group_id, month + "%"))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -196,13 +223,31 @@ def handle_message(event):
 
     text = event.message.text.strip()
     user_id = event.source.user_id
-    user_name = get_user_name(event)
+    group_id = get_group_id(event)
 
+    # 私訊不統計，只提醒要去群組用
+    if not group_id:
+        if text in ["💩", "/排行", "/本週", "/便秘", "/統計", "/說明"]:
+            reply = "這裡是私訊，不會記錄 💩\n請把我加進群組後，在群組裡使用。"
+        else:
+            return
+
+        with ApiClient(configuration) as api_client:
+            api = MessagingApi(api_client)
+            api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply)]
+                )
+            )
+        return
+
+    user_name = get_user_name(event)
     reply = None
 
     if text == "💩":
-        add_poop(user_id, user_name)
-        today_count = count_user_today(user_id)
+        add_poop(group_id, user_id, user_name)
+        today_count = count_user_today(group_id, user_id)
 
         reply = (
             f"已記錄 {user_name} 的 💩\n"
@@ -211,10 +256,10 @@ def handle_message(event):
         )
 
     elif text == "/排行":
-        rows = month_ranking()
+        rows = month_ranking(group_id)
 
         if not rows:
-            reply = "本月還沒有人大便。"
+            reply = "本月這個群組還沒有人大便。"
         else:
             month = datetime.now(TZ).month
             msg = f"🏆 {month}月大便排行榜\n\n"
@@ -223,19 +268,19 @@ def handle_message(event):
             reply = msg.strip()
 
     elif text == "/本週":
-        row = week_champion()
+        row = week_champion(group_id)
 
         if not row:
-            reply = "本週還沒有人大便。"
+            reply = "本週這個群組還沒有人大便。"
         else:
             name, total = row
             reply = f"👑 本週大便王：{name}\n本週已經 {total} 坨 💩"
 
     elif text == "/便秘":
-        result = constipation_king()
+        result = constipation_king(group_id)
 
         if not result:
-            reply = "目前沒有紀錄，大家都還很神秘。"
+            reply = "目前這個群組沒有紀錄，大家都還很神秘。"
         else:
             name, days = result
             if days == 0:
@@ -244,10 +289,10 @@ def handle_message(event):
                 reply = f"⚠️ {name} 已經 {days} 天沒大便了。"
 
     elif text == "/統計":
-        rows = daily_chart()
+        rows = daily_chart(group_id)
 
         if not rows:
-            reply = "本月還沒有統計資料。"
+            reply = "本月這個群組還沒有統計資料。"
         else:
             msg = "📊 本月每日大便統計\n\n"
             for day, total in rows:
@@ -262,7 +307,8 @@ def handle_message(event):
             "/排行：本月排行榜\n"
             "/本週：本週冠軍\n"
             "/便秘：誰最久沒大\n"
-            "/統計：每日統計圖"
+            "/統計：每日統計圖\n\n"
+            "注意：每個群組會分開統計，不會混在一起。"
         )
 
     else:
