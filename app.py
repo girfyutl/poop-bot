@@ -7,14 +7,15 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from linebot.v3.exceptions import InvalidSignatureError
 import os
-import sqlite3
 import random
+import psycopg2
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
 
 CHANNEL_SECRET = os.environ["CHANNEL_SECRET"]
 CHANNEL_ACCESS_TOKEN = os.environ["CHANNEL_ACCESS_TOKEN"]
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 handler = WebhookHandler(CHANNEL_SECRET)
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
@@ -22,44 +23,38 @@ configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 TZ = timezone(timedelta(hours=8))
 
 
-def init_db():
-    conn = sqlite3.connect("poop.db")
-    c = conn.cursor()
+def get_conn():
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
+
+def init_db():
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS poops (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            group_id TEXT,
-            user_id TEXT,
+            id SERIAL PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
             user_name TEXT,
-            created_at TEXT
+            created_at TIMESTAMPTZ NOT NULL
         )
     """)
-
-    # 如果你之前已經有舊資料表，這段會自動補上 group_id，不會爆掉
-    try:
-        c.execute("ALTER TABLE poops ADD COLUMN group_id TEXT")
-    except sqlite3.OperationalError:
-        pass
-
     conn.commit()
+    c.close()
     conn.close()
 
 
 def get_group_id(event):
-    if hasattr(event.source, "group_id") and event.source.group_id:
-        return event.source.group_id
-    return None
+    return getattr(event.source, "group_id", None)
 
 
 def get_user_name(event):
     user_id = event.source.user_id
+    group_id = get_group_id(event)
 
     try:
         with ApiClient(configuration) as api_client:
             api = MessagingApi(api_client)
-
-            group_id = get_group_id(event)
 
             if group_id:
                 profile = api.get_group_member_profile(group_id, user_id)
@@ -72,110 +67,140 @@ def get_user_name(event):
 
 
 def add_poop(group_id, user_id, user_name):
-    now = datetime.now(TZ).isoformat()
-    conn = sqlite3.connect("poop.db")
+    now = datetime.now(TZ)
+
+    conn = get_conn()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO poops (group_id, user_id, user_name, created_at) VALUES (?, ?, ?, ?)",
+        """
+        INSERT INTO poops (group_id, user_id, user_name, created_at)
+        VALUES (%s, %s, %s, %s)
+        """,
         (group_id, user_id, user_name, now)
     )
     conn.commit()
+    c.close()
     conn.close()
 
 
 def count_user_today(group_id, user_id):
-    today = datetime.now(TZ).date().isoformat()
-    conn = sqlite3.connect("poop.db")
+    now = datetime.now(TZ)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = today_start + timedelta(days=1)
+
+    conn = get_conn()
     c = conn.cursor()
     c.execute(
         """
         SELECT COUNT(*)
         FROM poops
-        WHERE group_id = ?
-        AND user_id = ?
-        AND created_at LIKE ?
+        WHERE group_id = %s
+        AND user_id = %s
+        AND created_at >= %s
+        AND created_at < %s
         """,
-        (group_id, user_id, today + "%")
+        (group_id, user_id, today_start, tomorrow_start)
     )
     count = c.fetchone()[0]
+    c.close()
     conn.close()
     return count
 
 
 def month_ranking(group_id):
-    month = datetime.now(TZ).strftime("%Y-%m")
-    conn = sqlite3.connect("poop.db")
+    now = datetime.now(TZ)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    if now.month == 12:
+        next_month_start = month_start.replace(year=now.year + 1, month=1)
+    else:
+        next_month_start = month_start.replace(month=now.month + 1)
+
+    conn = get_conn()
     c = conn.cursor()
     c.execute("""
         SELECT user_name, COUNT(*) as total
         FROM poops
-        WHERE group_id = ?
-        AND created_at LIKE ?
-        GROUP BY user_id
+        WHERE group_id = %s
+        AND created_at >= %s
+        AND created_at < %s
+        GROUP BY user_id, user_name
         ORDER BY total DESC
-    """, (group_id, month + "%"))
+    """, (group_id, month_start, next_month_start))
     rows = c.fetchall()
+    c.close()
     conn.close()
     return rows
 
 
 def week_champion(group_id):
     now = datetime.now(TZ)
-    start = now - timedelta(days=now.weekday())
-    start_text = start.date().isoformat()
+    week_start = now - timedelta(days=now.weekday())
+    week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    conn = sqlite3.connect("poop.db")
+    conn = get_conn()
     c = conn.cursor()
     c.execute("""
         SELECT user_name, COUNT(*) as total
         FROM poops
-        WHERE group_id = ?
-        AND created_at >= ?
-        GROUP BY user_id
+        WHERE group_id = %s
+        AND created_at >= %s
+        GROUP BY user_id, user_name
         ORDER BY total DESC
         LIMIT 1
-    """, (group_id, start_text))
+    """, (group_id, week_start))
     row = c.fetchone()
+    c.close()
     conn.close()
     return row
 
 
 def constipation_king(group_id):
-    conn = sqlite3.connect("poop.db")
+    conn = get_conn()
     c = conn.cursor()
     c.execute("""
         SELECT user_name, MAX(created_at) as last_time
         FROM poops
-        WHERE group_id = ?
-        GROUP BY user_id
+        WHERE group_id = %s
+        GROUP BY user_id, user_name
         ORDER BY last_time ASC
         LIMIT 1
     """, (group_id,))
     row = c.fetchone()
+    c.close()
     conn.close()
 
     if not row:
         return None
 
     name, last_time = row
-    last_date = datetime.fromisoformat(last_time).date()
+    last_date = last_time.astimezone(TZ).date()
     days = (datetime.now(TZ).date() - last_date).days
     return name, days
 
 
 def daily_chart(group_id):
-    month = datetime.now(TZ).strftime("%Y-%m")
-    conn = sqlite3.connect("poop.db")
+    now = datetime.now(TZ)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    if now.month == 12:
+        next_month_start = month_start.replace(year=now.year + 1, month=1)
+    else:
+        next_month_start = month_start.replace(month=now.month + 1)
+
+    conn = get_conn()
     c = conn.cursor()
     c.execute("""
-        SELECT substr(created_at, 1, 10) as day, COUNT(*)
+        SELECT DATE(created_at AT TIME ZONE 'Asia/Taipei') as day, COUNT(*)
         FROM poops
-        WHERE group_id = ?
-        AND created_at LIKE ?
+        WHERE group_id = %s
+        AND created_at >= %s
+        AND created_at < %s
         GROUP BY day
         ORDER BY day
-    """, (group_id, month + "%"))
+    """, (group_id, month_start, next_month_start))
     rows = c.fetchall()
+    c.close()
     conn.close()
     return rows
 
@@ -225,10 +250,9 @@ def handle_message(event):
     user_id = event.source.user_id
     group_id = get_group_id(event)
 
-    # 私訊不統計，只提醒要去群組用
     if not group_id:
         if text in ["💩", "/排行", "/本週", "/便秘", "/統計", "/說明"]:
-            reply = "這裡是私訊，不會記錄 💩\n請把我加進群組後，在群組裡使用。"
+            reply = "這裡是私訊，不會記錄 💩\n請在群組裡使用。"
         else:
             return
 
@@ -296,8 +320,9 @@ def handle_message(event):
         else:
             msg = "📊 本月每日大便統計\n\n"
             for day, total in rows:
+                day_text = day.strftime("%m-%d")
                 bar = "💩" * min(total, 10)
-                msg += f"{day[5:]}：{bar} {total}\n"
+                msg += f"{day_text}：{bar} {total}\n"
             reply = msg.strip()
 
     elif text == "/說明":
