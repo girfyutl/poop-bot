@@ -22,6 +22,9 @@ configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 
 TZ = timezone(timedelta(hours=8))
 
+DB_READY = False
+LAST_CLEANUP_DATE = None
+
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -42,6 +45,62 @@ def init_db():
     conn.commit()
     c.close()
     conn.close()
+
+
+def ensure_db_ready():
+    global DB_READY
+
+    if not DB_READY:
+        init_db()
+        DB_READY = True
+
+
+def cleanup_old_months():
+    now = datetime.now(TZ)
+
+    current_month_start = now.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    if current_month_start.month == 1:
+        keep_from = current_month_start.replace(
+            year=current_month_start.year - 1,
+            month=12
+        )
+    else:
+        keep_from = current_month_start.replace(
+            month=current_month_start.month - 1
+        )
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        DELETE FROM poops
+        WHERE created_at < %s
+        """,
+        (keep_from,)
+    )
+    conn.commit()
+    c.close()
+    conn.close()
+
+
+def maybe_cleanup_old_months():
+    global LAST_CLEANUP_DATE
+
+    today = datetime.now(TZ).date()
+
+    if LAST_CLEANUP_DATE == today:
+        return
+
+    ensure_db_ready()
+    cleanup_old_months()
+    LAST_CLEANUP_DATE = today
 
 
 def get_group_id(event):
@@ -224,9 +283,25 @@ def roast(today_count):
         return random.choice(roasts)
 
 
+def reply_to_line(event, reply):
+    with ApiClient(configuration) as api_client:
+        api = MessagingApi(api_client)
+        api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply)]
+            )
+        )
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "Poop bot is running!"
+
+
+@app.route("/wake", methods=["GET"])
+def wake():
+    return "大便超人醒了！可以回 LINE 傳 /說明 測試。"
 
 
 @app.route("/callback", methods=["POST"])
@@ -244,32 +319,51 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    init_db()
-
     text = event.message.text.strip()
     user_id = event.source.user_id
     group_id = get_group_id(event)
 
+    commands = ["💩", "/排行", "/本週", "/便秘", "/統計", "/說明", "/起床"]
+
     if not group_id:
-        if text in ["💩", "/排行", "/本週", "/便秘", "/統計", "/說明"]:
+        if text == "/起床":
+            reply = "大便超人醒了，但這裡是私訊，不會記錄 💩"
+        elif text in commands:
             reply = "這裡是私訊，不會記錄 💩\n請在群組裡使用。"
         else:
             return
 
-        with ApiClient(configuration) as api_client:
-            api = MessagingApi(api_client)
-            api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply)]
-                )
-            )
+        reply_to_line(event, reply)
         return
 
-    user_name = get_user_name(event)
-    reply = None
+    if text == "/起床":
+        reply = "大便超人醒了 💩\n馬桶系統已啟動。"
+        reply_to_line(event, reply)
+        return
+
+    if text == "/說明":
+        reply = (
+            "大便超人指令表 💩\n\n"
+            "傳 💩：記錄一次\n"
+            "/排行：本月排行榜\n"
+            "/本週：本週冠軍\n"
+            "/便秘：誰最久沒大\n"
+            "/統計：每日統計圖\n"
+            "/起床：叫醒機器人\n\n"
+            "注意：每個群組會分開統計，不會混在一起。\n"
+            "資料只保留本月 + 上個月，更久以前會自動沖掉。"
+        )
+        reply_to_line(event, reply)
+        return
+
+    if text not in commands:
+        return
+
+    maybe_cleanup_old_months()
 
     if text == "💩":
+        user_name = get_user_name(event)
+
         add_poop(group_id, user_id, user_name)
         today_count = count_user_today(group_id, user_id)
 
@@ -325,30 +419,11 @@ def handle_message(event):
                 msg += f"{day_text}：{bar} {total}\n"
             reply = msg.strip()
 
-    elif text == "/說明":
-        reply = (
-            "大便超人指令表 💩\n\n"
-            "傳 💩：記錄一次\n"
-            "/排行：本月排行榜\n"
-            "/本週：本週冠軍\n"
-            "/便秘：誰最久沒大\n"
-            "/統計：每日統計圖\n\n"
-            "注意：每個群組會分開統計，不會混在一起。"
-        )
-
     else:
         return
 
-    with ApiClient(configuration) as api_client:
-        api = MessagingApi(api_client)
-        api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=reply)]
-            )
-        )
+    reply_to_line(event, reply)
 
 
 if __name__ == "__main__":
-    init_db()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
