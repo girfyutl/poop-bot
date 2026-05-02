@@ -107,6 +107,19 @@ def get_group_id(event):
     return getattr(event.source, "group_id", None)
 
 
+def get_context_id(event):
+    group_id = get_group_id(event)
+
+    if group_id:
+        return group_id
+
+    return f"private:{event.source.user_id}"
+
+
+def is_private_chat(event):
+    return get_group_id(event) is None
+
+
 def get_user_name(event):
     user_id = event.source.user_id
     group_id = get_group_id(event)
@@ -125,7 +138,7 @@ def get_user_name(event):
         return "神秘便士"
 
 
-def add_poop(group_id, user_id, user_name):
+def add_poop(context_id, user_id, user_name):
     now = datetime.now(TZ)
 
     conn = get_conn()
@@ -135,14 +148,14 @@ def add_poop(group_id, user_id, user_name):
         INSERT INTO poops (group_id, user_id, user_name, created_at)
         VALUES (%s, %s, %s, %s)
         """,
-        (group_id, user_id, user_name, now)
+        (context_id, user_id, user_name, now)
     )
     conn.commit()
     c.close()
     conn.close()
 
 
-def count_user_today(group_id, user_id):
+def count_user_today(context_id, user_id):
     now = datetime.now(TZ)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow_start = today_start + timedelta(days=1)
@@ -158,7 +171,7 @@ def count_user_today(group_id, user_id):
         AND created_at >= %s
         AND created_at < %s
         """,
-        (group_id, user_id, today_start, tomorrow_start)
+        (context_id, user_id, today_start, tomorrow_start)
     )
     count = c.fetchone()[0]
     c.close()
@@ -166,7 +179,7 @@ def count_user_today(group_id, user_id):
     return count
 
 
-def month_ranking(group_id):
+def month_ranking(context_id):
     now = datetime.now(TZ)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -185,14 +198,14 @@ def month_ranking(group_id):
         AND created_at < %s
         GROUP BY user_id, user_name
         ORDER BY total DESC
-    """, (group_id, month_start, next_month_start))
+    """, (context_id, month_start, next_month_start))
     rows = c.fetchall()
     c.close()
     conn.close()
     return rows
 
 
-def week_champion(group_id):
+def week_champion(context_id):
     now = datetime.now(TZ)
     week_start = now - timedelta(days=now.weekday())
     week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -207,14 +220,14 @@ def week_champion(group_id):
         GROUP BY user_id, user_name
         ORDER BY total DESC
         LIMIT 1
-    """, (group_id, week_start))
+    """, (context_id, week_start))
     row = c.fetchone()
     c.close()
     conn.close()
     return row
 
 
-def constipation_king(group_id):
+def constipation_king(context_id):
     conn = get_conn()
     c = conn.cursor()
     c.execute("""
@@ -224,7 +237,7 @@ def constipation_king(group_id):
         GROUP BY user_id, user_name
         ORDER BY last_time ASC
         LIMIT 1
-    """, (group_id,))
+    """, (context_id,))
     row = c.fetchone()
     c.close()
     conn.close()
@@ -238,7 +251,7 @@ def constipation_king(group_id):
     return name, days
 
 
-def daily_chart(group_id):
+def daily_chart(context_id):
     now = datetime.now(TZ)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -257,7 +270,7 @@ def daily_chart(group_id):
         AND created_at < %s
         GROUP BY day
         ORDER BY day
-    """, (group_id, month_start, next_month_start))
+    """, (context_id, month_start, next_month_start))
     rows = c.fetchall()
     c.close()
     conn.close()
@@ -272,10 +285,35 @@ def roast(today_count):
         "尊重，今天又有產量。",
         "大便超人已為你記上一筆豐功偉業。",
         "這個頻率，馬桶應該認識你了。",
-        "你今天的腸道 KPI 達標了。"
+        "你今天的腸道 KPI 達標了。",
+        "這坨我先幫你登記，歷史會記住你的。",
+        "你的腸胃比我上班還準時。",
+        "很好，內臟沒有擺爛。",
+        "今日排放成功，地球少了一份壓力。",
+        "馬桶：又是你？",
+        "你不是在大便，你是在更新人生進度。",
+        "腸道通暢，人生順暢。",
+        "這一刻，你與馬桶達成了和解。",
+        "大便超人收到，這坨有被尊重。",
+        "你的身體正在進行系統清理。",
+        "恭喜完成今日人體版本更新。",
+        "這個產量，值得頒一張腸胃優良獎。",
+        "你今天不是普通人，是排放型人才。",
+        "馬桶已收到你的誠意。",
+        "腸胃：我今天有上班，不要扣薪。",
+        "這不是屎，這是你的努力結晶。",
+        "好，這筆我幫你寫進大便史。",
+        "恭喜你，成功把壓力轉化成實體。",
+        "便意來得快，紀錄不能慢。",
+        "你的腸道正在用行動證明自己。",
+        "今天的你，很有出口。",
+        "這波排放，穩。",
+        "馬桶表示：已處理。"
     ]
 
-    if today_count >= 5:
+    if today_count >= 7:
+        return "你今天第 7 坨以上了欸，馬桶要不要幫你報工時？"
+    elif today_count >= 5:
         return "你今天第 5 坨以上了欸，人體印鈔機是吧？"
     elif today_count >= 3:
         return "今天有點高產，馬桶辛苦了。"
@@ -301,7 +339,7 @@ def home():
 
 @app.route("/wake", methods=["GET"])
 def wake():
-    return "大便超人醒了！可以回 LINE 傳 /說明 測試。"
+    return "大便超人醒了！可以回 LINE 傳 /起床 或 /說明 測試。"
 
 
 @app.route("/callback", methods=["POST"])
@@ -321,27 +359,36 @@ def callback():
 def handle_message(event):
     text = event.message.text.strip()
     user_id = event.source.user_id
-    group_id = get_group_id(event)
+    context_id = get_context_id(event)
+    private_chat = is_private_chat(event)
 
     commands = ["💩", "/排行", "/本週", "/便秘", "/統計", "/說明", "/起床"]
 
-    if not group_id:
-        if text == "/起床":
-            reply = "大便超人醒了，但這裡是私訊，不會記錄 💩"
-        elif text in commands:
-            reply = "這裡是私訊，不會記錄 💩\n請在群組裡使用。"
-        else:
-            return
-
-        reply_to_line(event, reply)
-        return
-
     if text == "/起床":
-        reply = "大便超人醒了 💩\n馬桶系統已啟動。"
+        if private_chat:
+            reply = (
+                "大便超人醒了 💩\n"
+                "一對一模式已啟動。\n\n"
+                "如果我剛睡醒，第一則可能只是叫醒我。\n"
+                "請等約 1 分鐘後再傳一次指令。"
+            )
+        else:
+            reply = (
+                "大便超人醒了 💩\n"
+                "群組馬桶系統已啟動。\n\n"
+                "如果我剛睡醒，第一則可能只是叫醒我。\n"
+                "請等約 1 分鐘後再傳一次指令。"
+            )
+
         reply_to_line(event, reply)
         return
 
     if text == "/說明":
+        if private_chat:
+            place_text = "目前是一對一模式，紀錄只會算你自己的，不會跟群組混在一起。"
+        else:
+            place_text = "目前是群組模式，每個群組會分開統計，不會混在一起。"
+
         reply = (
             "大便超人指令表 💩\n\n"
             "傳 💩：記錄一次\n"
@@ -349,8 +396,13 @@ def handle_message(event):
             "/本週：本週冠軍\n"
             "/便秘：誰最久沒大\n"
             "/統計：每日統計圖\n"
-            "/起床：叫醒機器人\n\n"
-            "注意：每個群組會分開統計，不會混在一起。\n"
+            "/起床：確認機器人有沒有醒\n\n"
+            f"{place_text}\n\n"
+            "補充說明：\n"
+            "機器人 15 分鐘沒使用可能會睡著。\n"
+            "剛睡醒時，第一則訊息可能只是叫醒它。\n"
+            "請等大約 1 分鐘後再傳一次，通常就會正常回覆。\n"
+            "也可以先傳 /起床 測試大便超人有沒有在運作。\n\n"
             "資料只保留本月 + 上個月，更久以前會自動沖掉。"
         )
         reply_to_line(event, reply)
@@ -364,59 +416,91 @@ def handle_message(event):
     if text == "💩":
         user_name = get_user_name(event)
 
-        add_poop(group_id, user_id, user_name)
-        today_count = count_user_today(group_id, user_id)
+        add_poop(context_id, user_id, user_name)
+        today_count = count_user_today(context_id, user_id)
 
-        reply = (
-            f"已記錄 {user_name} 的 💩\n"
-            f"今天第 {today_count} 坨\n\n"
-            f"{roast(today_count)}"
-        )
+        if private_chat:
+            reply = (
+                f"已記錄你的 💩\n"
+                f"今天第 {today_count} 坨\n\n"
+                f"{roast(today_count)}"
+            )
+        else:
+            reply = (
+                f"已記錄 {user_name} 的 💩\n"
+                f"今天第 {today_count} 坨\n\n"
+                f"{roast(today_count)}"
+            )
 
     elif text == "/排行":
-        rows = month_ranking(group_id)
+        rows = month_ranking(context_id)
 
         if not rows:
-            reply = "本月這個群組還沒有人大便。"
+            reply = "本月還沒有人大便。"
         else:
             month = datetime.now(TZ).month
-            msg = f"🏆 {month}月大便排行榜\n\n"
+
+            if private_chat:
+                msg = f"🏆 你的 {month} 月大便紀錄\n\n"
+            else:
+                msg = f"🏆 {month}月大便排行榜\n\n"
+
             for i, (name, total) in enumerate(rows, start=1):
-                msg += f"{i}. {name} - {total} 坨\n"
+                if private_chat:
+                    msg += f"{i}. 你 - {total} 坨\n"
+                else:
+                    msg += f"{i}. {name} - {total} 坨\n"
+
             reply = msg.strip()
 
     elif text == "/本週":
-        row = week_champion(group_id)
+        row = week_champion(context_id)
 
         if not row:
-            reply = "本週這個群組還沒有人大便。"
+            reply = "本週還沒有人大便。"
         else:
             name, total = row
-            reply = f"👑 本週大便王：{name}\n本週已經 {total} 坨 💩"
+
+            if private_chat:
+                reply = f"👑 你本週已經 {total} 坨 💩"
+            else:
+                reply = f"👑 本週大便王：{name}\n本週已經 {total} 坨 💩"
 
     elif text == "/便秘":
-        result = constipation_king(group_id)
+        result = constipation_king(context_id)
 
         if not result:
-            reply = "目前這個群組沒有紀錄，大家都還很神秘。"
+            reply = "目前還沒有紀錄，腸胃狀態仍是謎。"
         else:
             name, days = result
-            if days == 0:
-                reply = f"{name} 今天有大便，暫時安全。"
+
+            if private_chat:
+                if days == 0:
+                    reply = "你今天有大便，暫時安全。"
+                else:
+                    reply = f"⚠️ 你已經 {days} 天沒大便了。"
             else:
-                reply = f"⚠️ {name} 已經 {days} 天沒大便了。"
+                if days == 0:
+                    reply = f"{name} 今天有大便，暫時安全。"
+                else:
+                    reply = f"⚠️ {name} 已經 {days} 天沒大便了。"
 
     elif text == "/統計":
-        rows = daily_chart(group_id)
+        rows = daily_chart(context_id)
 
         if not rows:
-            reply = "本月這個群組還沒有統計資料。"
+            reply = "本月還沒有統計資料。"
         else:
-            msg = "📊 本月每日大便統計\n\n"
+            if private_chat:
+                msg = "📊 你本月每日大便統計\n\n"
+            else:
+                msg = "📊 本月每日大便統計\n\n"
+
             for day, total in rows:
                 day_text = day.strftime("%m-%d")
                 bar = "💩" * min(total, 10)
                 msg += f"{day_text}：{bar} {total}\n"
+
             reply = msg.strip()
 
     else:
@@ -426,4 +510,5 @@ def handle_message(event):
 
 
 if __name__ == "__main__":
+    ensure_db_ready()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
