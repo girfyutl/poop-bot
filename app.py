@@ -2,7 +2,8 @@ from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
     MessagingApi, Configuration, ApiClient,
-    ReplyMessageRequest, TextMessage
+    ReplyMessageRequest, TextMessage,
+    QuickReply, QuickReplyItem, MessageAction
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from linebot.v3.exceptions import InvalidSignatureError
@@ -155,6 +156,34 @@ def add_poop(context_id, user_id, user_name):
     conn.close()
 
 
+def undo_latest_poop(context_id, user_id):
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        DELETE FROM poops
+        WHERE id = (
+            SELECT id
+            FROM poops
+            WHERE group_id = %s
+            AND user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        )
+        RETURNING user_name, created_at
+        """,
+        (context_id, user_id)
+    )
+
+    row = c.fetchone()
+    conn.commit()
+    c.close()
+    conn.close()
+
+    return row
+
+
 def count_user_today(context_id, user_id):
     now = datetime.now(TZ)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -278,7 +307,7 @@ def daily_chart(context_id):
 
 
 def roast(today_count):
-    roasts = [
+    normal_roasts = [
         "腸胃很認真上班欸。",
         "這不是大便，這是每日任務。",
         "你是不是跟馬桶簽約了？",
@@ -311,14 +340,80 @@ def roast(today_count):
         "馬桶表示：已處理。"
     ]
 
+    many_roasts = [
+        "今天有點高產，馬桶辛苦了。",
+        "你是不是兜不住屎？",
+        "這個頻率，馬桶應該要幫你辦會員卡。",
+        "你今天是不是跟廁所綁定了？",
+        "腸胃上班上到加班，太敬業了吧。",
+        "這不是排便，這是連續劇。",
+        "馬桶今天看到你應該會嘆氣。",
+        "你是不是把廁所當辦公室？",
+        "大便超人合理懷疑你今天兜不住。",
+        "這個產量，已經不是普通人類了。"
+    ]
+
+    extreme_roasts = [
+        "你今天真的兜不住屎欸，馬桶都快被你打卡打到熟了。",
+        "第 5 坨以上了，人體印鈔機是吧？只是印出來的是屎。",
+        "你這不是腸胃蠕動，你這是腸胃暴走。",
+        "馬桶：我只是個馬桶，不是你的心理諮商師。",
+        "你今天的屁股是不是開自動連發？",
+        "先暫停一下，你的腸道好像在開演唱會。",
+        "這個排放量，環保局都想來關心你。",
+        "你是不是吃飯不用消化，直接轉單給馬桶？"
+    ]
+
+    legendary_roasts = [
+        "你今天第 7 坨以上了欸，馬桶要不要幫你報工時？",
+        "這已經不是兜不住屎，是屎在追著你跑。",
+        "你的腸胃今天是不是開外掛？",
+        "馬桶現在應該想封鎖你。",
+        "大便超人宣布：你今天是人體排放傳奇。",
+        "你再拉下去，馬桶要成立工會了。",
+        "這個頻率，屁股應該要申請勞健保。",
+        "我合理懷疑你不是人在大便，是大便在做人。"
+    ]
+
     if today_count >= 7:
-        return "你今天第 7 坨以上了欸，馬桶要不要幫你報工時？"
+        return random.choice(legendary_roasts)
     elif today_count >= 5:
-        return "你今天第 5 坨以上了欸，人體印鈔機是吧？"
+        return random.choice(extreme_roasts)
     elif today_count >= 3:
-        return "今天有點高產，馬桶辛苦了。"
+        return random.choice(many_roasts)
     else:
-        return random.choice(roasts)
+        return random.choice(normal_roasts)
+
+
+def quick_reply_menu():
+    return QuickReply(
+        items=[
+            QuickReplyItem(
+                action=MessageAction(label="💩 記錄", text="💩")
+            ),
+            QuickReplyItem(
+                action=MessageAction(label="↩️ 收回", text="/收回")
+            ),
+            QuickReplyItem(
+                action=MessageAction(label="🏆 排行", text="/排行")
+            ),
+            QuickReplyItem(
+                action=MessageAction(label="👑 本週", text="/本週")
+            ),
+            QuickReplyItem(
+                action=MessageAction(label="🚨 便秘", text="/便秘")
+            ),
+            QuickReplyItem(
+                action=MessageAction(label="📊 統計", text="/統計")
+            ),
+            QuickReplyItem(
+                action=MessageAction(label="⏰ 起床", text="/起床")
+            ),
+            QuickReplyItem(
+                action=MessageAction(label="ℹ️ 說明", text="/說明")
+            ),
+        ]
+    )
 
 
 def reply_to_line(event, reply):
@@ -327,7 +422,12 @@ def reply_to_line(event, reply):
         api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=reply)]
+                messages=[
+                    TextMessage(
+                        text=reply,
+                        quick_reply=quick_reply_menu()
+                    )
+                ]
             )
         )
 
@@ -362,7 +462,20 @@ def handle_message(event):
     context_id = get_context_id(event)
     private_chat = is_private_chat(event)
 
-    commands = ["💩", "/排行", "/本週", "/便秘", "/統計", "/說明", "/起床"]
+    commands = [
+        "💩",
+        "/排行",
+        "/本週",
+        "/便秘",
+        "/統計",
+        "/說明",
+        "/起床",
+        "/收回",
+        "收回",
+        "/取消"
+    ]
+
+    undo_commands = ["/收回", "收回", "/取消"]
 
     if text == "/起床":
         if private_chat:
@@ -392,6 +505,7 @@ def handle_message(event):
         reply = (
             "大便超人指令表 💩\n\n"
             "傳 💩：記錄一次\n"
+            "/收回：收回自己最新一筆 💩\n"
             "/排行：本月排行榜\n"
             "/本週：本週冠軍\n"
             "/便秘：誰最久沒大\n"
@@ -431,6 +545,31 @@ def handle_message(event):
                 f"今天第 {today_count} 坨\n\n"
                 f"{roast(today_count)}"
             )
+
+    elif text in undo_commands:
+        row = undo_latest_poop(context_id, user_id)
+
+        if not row:
+            if private_chat:
+                reply = "你目前沒有可以收回的 💩。"
+            else:
+                reply = "你在這個群組目前沒有可以收回的 💩。"
+        else:
+            user_name, deleted_time = row
+            today_count = count_user_today(context_id, user_id)
+
+            if private_chat:
+                reply = (
+                    "已收回你最新一筆 💩\n"
+                    f"今天剩下 {today_count} 坨。\n\n"
+                    "這坨就當作被時光馬桶沖掉了。"
+                )
+            else:
+                reply = (
+                    f"已收回 {user_name} 最新一筆 💩\n"
+                    f"今天剩下 {today_count} 坨。\n\n"
+                    "這坨就當作被時光馬桶沖掉了。"
+                )
 
     elif text == "/排行":
         rows = month_ranking(context_id)
