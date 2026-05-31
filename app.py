@@ -234,6 +234,39 @@ def month_ranking(context_id):
     return rows
 
 
+def last_month_ranking(context_id):
+    now = datetime.now(TZ)
+    this_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    if this_month_start.month == 1:
+        last_month_start = this_month_start.replace(
+            year=this_month_start.year - 1,
+            month=12
+        )
+    else:
+        last_month_start = this_month_start.replace(
+            month=this_month_start.month - 1
+        )
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT user_name, COUNT(*) as total
+        FROM poops
+        WHERE group_id = %s
+        AND created_at >= %s
+        AND created_at < %s
+        GROUP BY user_id, user_name
+        ORDER BY total DESC
+    """, (context_id, last_month_start, this_month_start))
+
+    rows = c.fetchall()
+    c.close()
+    conn.close()
+
+    return last_month_start.month, rows
+
+
 def week_champion(context_id):
     now = datetime.now(TZ)
     week_start = now - timedelta(days=now.weekday())
@@ -280,26 +313,23 @@ def constipation_king(context_id):
     return name, days
 
 
-def daily_chart(context_id):
+def today_summary(context_id):
     now = datetime.now(TZ)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    if now.month == 12:
-        next_month_start = month_start.replace(year=now.year + 1, month=1)
-    else:
-        next_month_start = month_start.replace(month=now.month + 1)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = today_start + timedelta(days=1)
 
     conn = get_conn()
     c = conn.cursor()
     c.execute("""
-        SELECT DATE(created_at AT TIME ZONE 'Asia/Taipei') as day, COUNT(*)
+        SELECT user_name, COUNT(*) as total
         FROM poops
         WHERE group_id = %s
         AND created_at >= %s
         AND created_at < %s
-        GROUP BY day
-        ORDER BY day
-    """, (context_id, month_start, next_month_start))
+        GROUP BY user_id, user_name
+        ORDER BY total DESC, MAX(created_at) ASC
+    """, (context_id, today_start, tomorrow_start))
+
     rows = c.fetchall()
     c.close()
     conn.close()
@@ -398,6 +428,9 @@ def quick_reply_menu():
                 action=MessageAction(label="🏆 排行", text="/排行")
             ),
             QuickReplyItem(
+                action=MessageAction(label="📅 上月", text="/上月")
+            ),
+            QuickReplyItem(
                 action=MessageAction(label="👑 本週", text="/本週")
             ),
             QuickReplyItem(
@@ -465,6 +498,7 @@ def handle_message(event):
     commands = [
         "💩",
         "/排行",
+        "/上月",
         "/本週",
         "/便秘",
         "/統計",
@@ -507,9 +541,10 @@ def handle_message(event):
             "傳 💩：記錄一次\n"
             "/收回：收回自己最新一筆 💩\n"
             "/排行：本月排行榜\n"
+            "/上月：上月排行榜\n"
             "/本週：本週冠軍\n"
             "/便秘：誰最久沒大\n"
-            "/統計：每日統計圖\n"
+            "/統計：今日打卡狀況\n"
             "/起床：確認機器人有沒有醒\n\n"
             f"{place_text}\n\n"
             "補充說明：\n"
@@ -592,6 +627,25 @@ def handle_message(event):
 
             reply = msg.strip()
 
+    elif text == "/上月":
+        month, rows = last_month_ranking(context_id)
+
+        if not rows:
+            reply = f"{month} 月沒有大便紀錄。"
+        else:
+            if private_chat:
+                msg = f"📅 你的 {month} 月大便紀錄\n\n"
+            else:
+                msg = f"📅 {month}月大便排行榜\n\n"
+
+            for i, (name, total) in enumerate(rows, start=1):
+                if private_chat:
+                    msg += f"{i}. 你 - {total} 坨\n"
+                else:
+                    msg += f"{i}. {name} - {total} 坨\n"
+
+            reply = msg.strip()
+
     elif text == "/本週":
         row = week_champion(context_id)
 
@@ -625,22 +679,34 @@ def handle_message(event):
                     reply = f"⚠️ {name} 已經 {days} 天沒大便了。"
 
     elif text == "/統計":
-        rows = daily_chart(context_id)
+        rows = today_summary(context_id)
 
         if not rows:
-            reply = "本月還沒有統計資料。"
+            if private_chat:
+                reply = (
+                    "📊 今日打卡狀況\n\n"
+                    "你今天還沒有打卡 💩"
+                )
+            else:
+                reply = (
+                    "📊 今日打卡狀況\n\n"
+                    "今天還沒有人打卡 💩\n"
+                    "群組馬桶目前很安靜。"
+                )
         else:
             if private_chat:
-                msg = "📊 你本月每日大便統計\n\n"
+                name, total = rows[0]
+                reply = (
+                    "📊 今日打卡狀況\n\n"
+                    f"你今天已打卡 {total} 次 💩"
+                )
             else:
-                msg = "📊 本月每日大便統計\n\n"
+                msg = "📊 今日打卡狀況\n\n"
 
-            for day, total in rows:
-                day_text = day.strftime("%m-%d")
-                bar = "💩" * min(total, 10)
-                msg += f"{day_text}：{bar} {total}\n"
+                for i, (name, total) in enumerate(rows, start=1):
+                    msg += f"{i}. {name}：{total} 次\n"
 
-            reply = msg.strip()
+                reply = msg.strip()
 
     else:
         return
